@@ -77,7 +77,6 @@ PackProof processes untrusted third-party software. Answer each:
 - [ ] `docs/architecture.md` updated if module responsibilities or invariants changed
 - [ ] Docstrings on every new public function and class
 - [ ] `CHANGELOG`/version bumped if this changes released behavior
-- [ ] `HACKATHON.md` left untouched
 
 ## Checklist
 

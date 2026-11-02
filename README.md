@@ -142,8 +142,8 @@ downloader; the downloader is the next milestone.
 Requires [`uv`](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/Barnakdas-tech/PackProof.git
-cd PackProof
+git clone https://github.com/Barnakdas-tech/PackProof-Standalone.git
+cd PackProof-Standalone
 uv sync --dev          # creates .venv, installs runtime + dev dependencies
 ```
 
@@ -289,8 +289,7 @@ uv run ruff check . && uv run ruff format --check . && uv run pytest
 ```
 
 Scope discipline is expected: no dependency added without a reason, no empty
-placeholders, no analysis logic in the CLI layer. `HACKATHON.md` is a required project
-artifact and must not be deleted or rewritten out of history.
+placeholders, no analysis logic in the CLI layer.
 
 ## License
 
