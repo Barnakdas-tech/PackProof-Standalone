@@ -16,10 +16,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Barnakdas-tech/PackProof"
-Repository = "https://github.com/Barnakdas-tech/PackProof"
-Issues = "https://github.com/Barnakdas-tech/PackProof/issues"
-
+Homepage = "https://github.com/Barnakdas-tech/PackProof-Standalone"
+Repository = "https://github.com/Barnakdas-tech/PackProof-Standalone"
+Issues = "https://github.com/Barnakdas-tech/PackProof-Standalone/issues"
 [project.scripts]
 packproof = "packproof.cli.main:main"
 
