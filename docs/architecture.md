@@ -23,7 +23,9 @@ Dependencies point downward only. A lower layer must never import a higher one.
                       |
         reporting/  ai/  provenance/  detectors/  analyzer/     the engine
                       |
-                  fetchers/          registry + host communication
+                  registry/          npm reference parsing, registry metadata retrieval
+                                     and artifact download; source-host communication
+                                     lands here later
                       |
               schemas/  config/  utils/     shared, dependency-free foundations
 ```
@@ -35,27 +37,38 @@ Dependencies point downward only. A lower layer must never import a higher one.
 | `src/packproof/__init__.py` | The authoritative `__version__` literal | Import anything (keeps `import packproof` side-effect free) |
 | `src/packproof/__main__.py` | `python -m packproof` | Contain logic; it calls `cli.main:main` |
 | `src/packproof/cli/main.py` | Typer app, global flags, help text, exit codes | Analysis, network, filesystem writes |
-| `src/packproof/config/settings.py` | Validated limits: HTTP timeout, download ceiling, workspace dir and the workspace security policy | Secrets in plain attributes; implicit env binding; creating the workspace |
+| `src/packproof/config/settings.py` | Validated limits: HTTP timeout, the metadata-response ceiling (`max_metadata_bytes`) and the archive ceiling (`max_download_bytes`), workspace dir and the workspace security policy | Secrets in plain attributes; implicit env binding; creating the workspace |
 | `src/packproof/utils/logging.py` | One `configure_logging()` entry point | `basicConfig()`, per-module handler setup |
 | `src/packproof/utils/__init__.py` | A home for genuinely shared helpers | Business logic in disguise |
+| `src/packproof/schemas/models.py` | `PackageRef`: the shared reference model — name, optional scope, one exact version — with its grammar enforced on the fields so every entry route is bound by it. Those rules are npm's today because npm is the only registry implemented, and the grammar is a subset of node-semver's: exact and unprefixed, with no normalization. `PackageVersionMetadata`, `PackageDistribution` and `PackageRepository` are the shape of a registry's answer: text-only fields, an SRI integrity value, one HTTPS tarball URL, and no field that means "trusted" | Import from `registry/` or any higher layer; widen a field beyond its allowlist |
+| `src/packproof/registry/npm.py` | Turning a typed reference into a validated `PackageRef`; npm's spelling of a reference — `@scope/name@version`, dist-tags, ranges — is decided here | Network, filesystem or code execution; restating the grammar the model owns |
+| `src/packproof/registry/npm_fetcher.py` | One bounded HTTPS `GET` of a package document per reference, the version selected from that document locally, and the answer projected into validated `schemas/` models or refused as one of the named `registry/errors.py` categories. It also owns `registry_opener()`, the transport chain both registry clients run through: one approved origin, no redirect following, no environment proxy | Downloading or opening a tarball; following a URL that came from inside a response; logging a response body; network or filesystem work at import time |
+| `src/packproof/registry/download_policy.py` | Turning the registry's untrusted `dist.tarball` text into a target this process is willing to connect to, or refusing it. The authority is approved by exact string equality against the configured host — not by the parsed `hostname`, which lowercases and strips userinfo — and the request URL is then rebuilt from the approved components, so the value that was checked is the value that gets dialled. Every refusal is a named code, not a sentence | Opening a socket; approving a URL because the model could parse it; putting a refused or signed URL into the refusal it produces |
+| `src/packproof/registry/artifact_store.py` | The filesystem half. Staging under a name this process invented (`.partial.<pid>.<random hex>`, created `O_EXCL`, private mode), hashing while writing, publishing by `os.link` of the staged file to `<sha256>.tgz`, syncing the directory, and one ledger per operation whose state is derived from its fields rather than stored. `settle()` recovers a publication the ledger never finished recording | Renaming over a destination — `os.replace` swaps a symlink's name and takes no `dir_fd`; inspecting the destination for anything but `EEXIST`; taking a name from a URL or an archive member; extracting |
+| `src/packproof/registry/npm_download.py` | Asking an approved target for the artifact bytes over the shared `registry_opener()` chain, bounding the body by the bytes that actually arrive, checking **every** integrity claim the metadata supplied rather than only the strongest, and returning a `PackageArtifact` only for bytes that hold. A destination that already carries these bytes is reused, and a destination carrying other bytes is refused and left alone | Publishing bytes it could not check; naming the signed URL in a message, a `repr()`, a log line or a returned object; decompressing, extracting or executing anything |
+| `src/packproof/schemas/artifacts.py` | `PackageArtifact` and `ArtifactVerification`: what PackProof now has on disk, deliberately not a copy of what the registry claimed. `VERIFIED` cannot be constructed with an empty `checked_claims` and `UNAVAILABLE` cannot be constructed with a non-empty one, `file_name` must be `<64 lowercase hex>.tgz`, the directory must be absolute, and no field can hold a URL | Representing a mismatch — mismatched bytes raise, so no artifact exists for them; importing from `registry/` |
+| `src/packproof/registry/errors.py` | Two taxonomies, because a registry call has two ways to be wrong: `RegistryError` for what the registry *said* and `ArtifactError` for what PackProof could or could not *do* with that answer. ASCII messages that name fields, codes, byte counts and paths under this process's control | Carrying a response object, a reason phrase, a response body or a URL taken from either |
 
 ### Planned, deliberately not created yet
 
 Creating a package with only an empty `__init__.py` invites dead code and makes the
-tree look further along than it is. These land with their first real module and tests:
+tree look further along than it is. These land with their first real module and tests
+(`schemas/` and `registry/` arrived that way in Stage 2.1, the metadata client joined them
+in Stage 2.2 and the artifact download in Stage 2.3B, so what is listed below for them is
+the module or model that has not been written yet, not the package):
 
-| Future package | Responsibility | First expected module |
+| Future package or module | Responsibility | First expected module |
 |---|---|---|
-| `fetchers/` | Registry and source-host communication; the only layer that talks to the network | `npm_fetcher.py` — manifest + tarball download with `max_download_bytes` enforcement |
-| `schemas/` | Pydantic models shared across layers: `PackageRef`, `FileRecord`, `Finding`, `RiskAssessment`, `ScanReport` | `models.py` |
+| `registry/` — the source-host half | The source host's answer at the resolved revision, written under `config.workspace_path` | a host client behind the same `registry_opener()` policy |
+| `schemas/` — the models after the artifact | `FileRecord`, `Finding`, `RiskAssessment`, `ScanReport` | joins `models.py` and `artifacts.py`, which already hold the reference, metadata and download models |
 | `analyzer/` | Deterministic integrity analysis: inventory, SHA-256 hashing, structural comparison, diff classification | `inventory.py`, `hashing.py` |
 | `detectors/` | Classify legitimate build output vs. unexplained modification | `artifact_detector.py`, `security_detector.py` |
 | `provenance/` | Verify signatures, SLSA/npm attestations, and the commit-to-artifact claim | `attestations.py` |
 | `ai/` | Explanation generation over already-computed findings, via a local model | `explainer.py` |
 | `reporting/` | Render the validated report as JSON, HTML, PDF | `json_reporter.py` |
 
-The npm-only assumption lives in `fetchers/`, not in the engine. PyPI support means a
-new fetcher that produces the same `schemas/` objects — `analyzer/` should not need to
+The npm-only assumption lives in `registry/`, not in the engine. PyPI support means a
+sibling package that produces the same `schemas/` objects — `analyzer/` should not need to
 know which registry a package came from.
 
 ## Planned data flow
@@ -63,7 +76,7 @@ know which registry a package came from.
 ```
 "express@4.21.2"
    │
-   ├─ fetchers/    manifest → tarball (bounded) + GitHub source at the resolved revision
+   ├─ registry/    manifest → tarball (bounded) + GitHub source at the resolved revision
    │               │            both written under config.workspace_path
    ├─ schemas/     PackageRef, FileRecord …        ← validation boundary for all input
    ├─ analyzer/    inventory + hashes + diff        ← deterministic
@@ -90,19 +103,29 @@ Everything PackProof reads is authored or published by someone who may be hostil
    models in `schemas/` are the only place they enter the engine.
 4. **Never execute commands found in package files** — no `scripts`, no shell snippets,
    no build instructions.
-5. **Bounded reads.** Size ceilings (`max_download_bytes`), entry-count ceilings,
+5. **Bounded reads.** Size ceilings — `max_metadata_bytes` for a registry document and
+   `max_download_bytes` for an archive, counted against the bytes that actually arrive
+   because `Content-Length` is a claim, not a fact — entry-count ceilings,
    decompression-ratio ceilings, and timeouts on every network call.
-6. **Safe filesystem handling.** Reject path traversal (`..`), absolute member paths,
+6. **One origin, and no redirect is ever followed.** A request goes only to the configured
+   registry host, over an authority approved by exact string equality and a URL rebuilt from
+   the components that were approved. A `Location` value is a URL supplied *inside* a
+   response, so the handler that would have followed one refuses instead.
+7. **Safe filesystem handling.** Reject path traversal (`..`), absolute member paths,
    and symlinks or hardlinks pointing outside the workspace; keep untrusted content
    under `workspace_dir`, which is vetted whenever a `Settings` object is built — see
    *The scan workspace boundary* below. Both checks are required and neither substitutes
    for the other: the workspace check describes one configured directory as it was at
    configuration time, while member names are chosen by the package author later, inside
-   an archive nobody has inspected yet.
-7. **No secrets in logs or reports.** Credentials live in `SecretStr` fields or the
+   an archive nobody has inspected yet. Neither check is used to name a file PackProof
+   writes: a staged name is invented by this process and the published name is a digest
+   this process computed over bytes it has already checked.
+8. **No secrets in logs or reports.** Credentials live in `SecretStr` fields or the
    environment, are redacted by construction, and are never interpolated into a
-   message, a rendered report, or a CI log.
-8. **Fail closed.** A download, extraction, or verification that cannot be completed
+   message, a rendered report, or a CI log. A registry's time-limited signed tarball
+   query is a capability on the same footing, so it reaches neither a message, a `repr()`,
+   a log line, nor a rendered traceback.
+9. **Fail closed.** A download, extraction, or verification that cannot be completed
    safely is reported as an inconclusive scan, not silently skipped.
 
 ## The scan workspace boundary
@@ -299,6 +322,71 @@ contained in the workspace, refuse or isolate symlinks and hardlinks, honour the
 entry-count and decompression-ratio limits, and create directories without inheriting the
 archive's mode bits. A correct workspace path makes none of that unnecessary.
 
+## Artifact retrieval and publication
+
+Stage 2.3B is the first code in PackProof that writes registry bytes to disk, and it stops at
+the file. **No archive is opened, listed or extracted, nothing inside one is executed, and `npm`
+is never invoked** — extraction is Stage 3, and the rules that will govern it are already
+written in *Configuration validation is not archive-extraction security* above.
+
+One download, one owner per step:
+
+1. `npm_fetcher.py` retrieves the version's metadata, which records `dist.tarball` as text and
+   never requests it.
+2. `download_policy.py` decides whether that text is a target worth connecting to, and rebuilds
+   the request URL from the components it approved. A refusal names a code, not a URL: npm
+   serves tarballs with time-limited signed queries, so the query is a capability, and a refused
+   target is not repeated back to the caller either.
+3. `npm_download.py` sends the request through `registry_opener()` — the same chain the metadata
+   client uses, so one origin guard, one redirect refusal and one no-proxy rule answer for both
+   — and streams the body into a file `artifact_store.py` has staged, hashing it as it arrives.
+4. Every integrity claim the metadata supplied is compared over those bytes. A mismatch raises,
+   the staged file is discarded, and nothing is published.
+5. Only then does the digest become a name: `os.link` of the staged file to `<sha256>.tgz`, an
+   `fsync` of the directory, and a `PackageArtifact` reporting which claims held.
+
+Three choices inside that path carry their reasons because each was measured first:
+
+- **Publication is a link, not a rename.** `os.replace` replaces the *name* a destination holds,
+  including through a symlink, and takes no `dir_fd`; `os.link` never clobbers and answers
+  `EEXIST` with the destination intact. So `EEXIST` is the only error in which inspecting the
+  destination means anything, and every other errno is a plain failure.
+- **`Content-Length` is believed zero times.** The ceiling counts the bytes that arrive, and a
+  body that overshoots is abandoned within one chunk of the limit rather than after it.
+- **No claim is traded for a stronger one.** Checking only `dist.integrity` would let a version's
+  weaker `dist.shasum` go unverified while the artifact still reported `VERIFIED`, so every
+  supplied claim is checked and every claim that held is named, in the models' own rank order.
+
+**What this stage does not guarantee.** Four limits are open on purpose. Each is pinned by a test
+that asserts the limit as it is rather than a better one nobody measured.
+
+- **Frame locals are cleared in PackProof's frames and nowhere else.** `download` and `_attempt`
+  empty their own locals in their own `finally`, so walking a failure's traceback finds `None`
+  where the signed URL was — the names are present, the values are not. Helper frames in the
+  same module bind the request or the response while they work and are not scrubbed: a failure
+  raised inside `_send` leaves exactly one holder, `request` in the `_send` frame. Nothing
+  renders frame locals — a traceback prints source lines, and the message, `repr`, rendered
+  traceback and log line of every failure path are asserted target-free — so this is not a
+  disclosure, and it is why **U9/S-11 stays open**. Standard-library frames above PackProof's sit
+  outside this boundary entirely.
+- **The commit window is not atomic, and cannot be made so.** A publication is a link followed by
+  a directory sync, and an interrupt between them is a state the ledger has to describe rather
+  than a state the code can prevent; arbitrary asynchronous interruption at certain bytecode
+  boundaries is not fully atomic in CPython. `settle()` exists to name what such a window became,
+  and the round-8 precedence rules decide which of several competing exceptions the caller sees.
+- **The store publishes under the name it is handed.** `finalize` checks that a digest is
+  present, not that the resulting `<name>.tgz` is 64 lowercase hex, so a caller that passed
+  `"../escape"` would write outside the workspace. Nothing in the download path can produce that
+  value — `npm_download.py` assigns `hashlib.sha256(...).hexdigest()` and `PackageArtifact`
+  refuses a `file_name` that is not the content-addressed spelling — so the guarantee is real but
+  lives one layer up, in the caller and the model. `artifact_store.py`'s test says so by name.
+- **Nothing here is measured on Windows.** The publication core is exercised on macOS (local
+  runs, CPython 3.11.15 / 3.12.13 / 3.13.6 / 3.14.4) and Ubuntu (CI, 3.11 / 3.12 / 3.13).
+  `os.link`, `dir_fd` and `O_EXCL` behave differently on Windows, and the only Windows content
+  anywhere in PackProof is `default_workspace_dir()`'s branch, which is tested by patching
+  `sys.platform` — that is not the same as having run on Windows, and this stage claims no more
+  than the platforms that were executed.
+
 ## Configuration and logging conventions
 
 - Modules obtain a logger with `logging.getLogger(__name__)` and never configure one.
@@ -321,7 +409,31 @@ archive's mode bits. A correct workspace path makes none of that unnecessary.
 | `tests/integration/` | Process-boundary behavior (`python -m packproof`, entry points) | forbidden |
 | `tests/fixtures/` | Synthetic inputs; see its README | n/a |
 
-Registry and GitHub communication is mocked at the `fetchers/` boundary once it exists;
+The npm metadata client is mocked at its transport boundary: a test injects an opener and
+the client never builds a real one, so no request leaves the process. A socket guard in the
+fetcher's module fails any test that reaches the network anyway, and one integration test
+imports the registry layers in a fresh interpreter under `sys.addaudithook` to prove the
+import itself opens no socket and writes no file. The source-host client, when it arrives,
+is mocked the same way.
+
+The artifact layers are tested against a real temporary directory instead of a mocked
+filesystem, because the properties worth proving are properties of the directory: the file on
+disk hashes to the name it was published under, a refused download leaves no file, foreign
+bytes in a destination position are still there at their original mtime. The transport is the
+part that is stubbed, and deliberately so — a chunk list that can raise partway through is what
+makes the ceiling, truncation and claim-failure tests about this client rather than about
+`http.client`. Rare paths are reached by deterministic fault injection (a log sink that is
+down, an `fsync` that reports errno 0, an interrupt landing inside the commit window) rather
+than left untested.
+
+Two limits of that audit-hook test are written into its own file, because a control that
+overstates what it can see is worse than no control at all. The four socket-stack names are
+raised for the hook with `sys.audit` instead of dialled, since no test in this stage may open a
+socket or ask for a name; only `urllib.Request` is proved from a real call, through urllib's own
+`file://` opener. And a `Request` that never reaches an opener fires no event whatever, so "no
+network-shaped event during import" means no network *operation* — not that no request object
+was built.
+
 CI must never depend on an external service's availability or on a package that someone
 could unpublish. Determinism is a product requirement, so a test that reaches the
 network is a bug in the test.
@@ -352,11 +464,16 @@ verifies code, it does not publish it.
 - **`Settings.from_env()` over `pydantic-settings`.** Three bounded values do not
   justify a dependency and a second, implicit configuration surface. Revisit if
   per-ecosystem registries or AI model options make the env parsing branch-heavy.
+- **`urllib.request` for the metadata client, not an HTTP library.** The requirement is
+  one bounded `GET`, a keyword-bound timeout, and a transport a test can replace — all of
+  which the standard library gives, and the fetcher takes the opener as a constructor
+  argument so swapping the transport later changes one call site. Revisit when the
+  download stage needs retries, ranged requests, or parallel fetches.
 - **Version in `__init__.py`, read at build time.** Keeps one literal and avoids
   `importlib.metadata` at runtime. Alternative: static version in `pyproject.toml` and
   a runtime metadata lookup. Current choice is better for source-tree execution.
 - **Ruff selects `S` (bandit).** Expect per-file ignores in tests and possibly in
-  `fetchers/`; add narrow, commented ignores rather than dropping the rule set.
+  `registry/`; add narrow, commented ignores rather than dropping the rule set.
 - **Planned Pydantic models in `schemas/` as the only input boundary.** Correct for a
   CLI product; if PackProof later ships a library API, decide whether public
   dataclasses matter for downstream consumers.
