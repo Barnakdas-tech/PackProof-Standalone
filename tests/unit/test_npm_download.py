@@ -8,7 +8,7 @@ claims exist only while bytes are arriving, and a stub that hands over a chunk l
 partway through and counts its own reads is what makes those assertions about this client rather
 than about `http.client`.
 
-Every section was written against `/tmp/pp-verify/pp30_download_probe.py`, the scratch simulation
+Every section was written against the scratch probe script that this file replaces and
 that ran 73 checks during design. Mapping the probe into permanent tests changed two of its
 expectations rather than copying them: the probe asserted a chunk ceiling by its own arithmetic
 (`50000` of a `53248` read), and the permanent version asserts the *bound* — the overshoot is at
