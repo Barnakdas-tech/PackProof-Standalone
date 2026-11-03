@@ -4,8 +4,23 @@
 built rather than halfway through a download. Nothing constructs it yet: the CLI has no
 command that needs a workspace, so this becomes an operating reality when a `scan`
 command calls `Settings.from_env()`. Environment overrides are read explicitly in
-`from_env()` instead of through a settings library: three values need configuring
-today, and an implicit binding would put configuration in two places to look for.
+`from_env()` instead of through a settings library: the values that need configuring are
+few, and an implicit binding would put configuration in two places to look for.
+
+Size limits
+-----------
+`max_download_bytes` and `max_metadata_bytes` bound different objects and are not
+interchangeable. The download ceiling covers a package tarball — an archive PackProof
+writes to disk and later unpacks, so its size tracks what a package contains. The
+metadata ceiling covers a registry packument, the JSON document listing every published
+version of a package, whose size tracks how *long* a package has been published instead.
+Measured against the public npm registry with no compression requested, `express` is
+823 KB while `typescript` (15.9 MB), `@types/node` (11.2 MB) and `aws-sdk` (10.6 MB) are
+each an order of magnitude larger. Reusing the tarball limit would set a metadata bound
+from an archive's expected weight — too generous against a registry that streams forever,
+and too tight for an old, heavily published package. The default therefore sits at roughly
+twice the largest packument measured, and its ceiling stays well under the tarball's
+because the entire document is accumulated in memory before a parser sees it.
 
 Workspace policy
 ----------------
@@ -101,9 +116,15 @@ WORKSPACE_DIR_NAME = "scan-workspace"
 
 DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+DEFAULT_MAX_METADATA_BYTES = 32 * 1024 * 1024
+
+#: The whole packument is held in memory before it is parsed, so a metadata limit has to
+#: be smaller than a tarball limit that streams to disk. See "Size limits" above.
+MAX_METADATA_BYTES_CEILING = 256 * 1024 * 1024
 
 ENV_HTTP_TIMEOUT_SECONDS = "PACKPROOF_HTTP_TIMEOUT_SECONDS"
 ENV_MAX_DOWNLOAD_BYTES = "PACKPROOF_MAX_DOWNLOAD_BYTES"
+ENV_MAX_METADATA_BYTES = "PACKPROOF_MAX_METADATA_BYTES"
 ENV_WORKSPACE_DIR = "PACKPROOF_WORKSPACE_DIR"
 ENV_XDG_CACHE_HOME = "XDG_CACHE_HOME"
 ENV_LOCALAPPDATA = "LOCALAPPDATA"
@@ -113,6 +134,7 @@ ENV_LOCALAPPDATA = "LOCALAPPDATA"
 ENVIRONMENT_FIELDS: dict[str, str] = {
     "http_timeout_seconds": ENV_HTTP_TIMEOUT_SECONDS,
     "max_download_bytes": ENV_MAX_DOWNLOAD_BYTES,
+    "max_metadata_bytes": ENV_MAX_METADATA_BYTES,
     "workspace_dir": ENV_WORKSPACE_DIR,
 }
 
@@ -617,7 +639,7 @@ def _validate_workspace(value: Path) -> Path:
 
 
 class Settings(BaseModel):
-    """Runtime limits for fetching and unpacking candidate packages."""
+    """Runtime limits for retrieving and unpacking candidate packages."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -632,6 +654,15 @@ class Settings(BaseModel):
         gt=0,
         le=2 * _GIBIBYTE,
         description="Hard ceiling on a downloaded tarball before the stream is abandoned.",
+    )
+    max_metadata_bytes: int = Field(
+        default=DEFAULT_MAX_METADATA_BYTES,
+        gt=0,
+        le=MAX_METADATA_BYTES_CEILING,
+        description=(
+            "Hard ceiling on a registry metadata response, enforced while reading the body "
+            "rather than by trusting a Content-Length header."
+        ),
     )
     workspace_dir: Path = Field(
         default_factory=default_workspace_dir,

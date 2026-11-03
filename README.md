@@ -121,21 +121,40 @@ wrong, and PackProof will say so.
 - Ruff lint + format gates, GitHub Actions CI on Python 3.11/3.12/3.13
 - This README, license, `.gitignore`, architecture doc, PR template
 
+**Implemented as library code — no command reaches it yet**
+
+- npm package references (`express@4.18.2`, `@scope/name@version`) parsed into a validated
+  `PackageRef`, and the registry's metadata document resolved into validated models or refused
+  as one of the named `registry/errors.py` categories
+- npm tarball downloading: one HTTPS `GET` against one approved origin, redirects never followed,
+  and the body bounded by the bytes that actually arrive rather than by the size the response
+  declared
+- Integrity verification: every claim a version supplies — `dist.integrity`'s SRI digest and the
+  legacy `dist.shasum` — is checked against the bytes that were read. Bytes that fail a claim are
+  never published. A version with no claims is stored and reported as `UNAVAILABLE`, never as
+  verified
+- Safe storage of what was downloaded: bytes are staged under a name this process invented,
+  created exclusively and in private mode, then published by hard link under `<sha256>.tgz` —
+  never by renaming over a destination. A destination that already holds these bytes is reused;
+  one holding other bytes is refused and left exactly as it was
+- Not extracted: PackProof stores the tarball and never opens it. No archive member is read, no
+  `package.json` script is run, and no package code is executed anywhere in this repository
+
 **Not implemented — planned for later milestones**
 
-- ❌ Package downloading and registry metadata resolution
 - ❌ Source repository and revision resolution
-- ❌ File comparison, hashing, diffing
+- ❌ Reading the stored archive: per-file hashing, comparison and diffing
 - ❌ Build-artifact classification and modification detection
 - ❌ Provenance and signature verification
+- ❌ Full source comparison and security analysis, including risk scoring
 - ❌ AI-generated explanations
-- ❌ Risk scoring
 - ❌ JSON, HTML and PDF reports
 - ❌ Web interface
 - ❌ PyPI support
 
-There is no `packproof scan` command yet. The architecture is ready for the npm
-downloader; the downloader is the next milestone.
+There is no `packproof scan` command, and no command downloads a package: the downloader is
+library code that only tests call. The next milestone is the comparison that turns a stored
+tarball and the source revision it claims into a finding.
 
 ## Installation
 

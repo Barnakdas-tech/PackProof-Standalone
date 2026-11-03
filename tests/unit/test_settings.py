@@ -20,13 +20,16 @@ from packproof.config.settings import (
     CHECKOUT_ROLE,
     DEFAULT_HTTP_TIMEOUT_SECONDS,
     DEFAULT_MAX_DOWNLOAD_BYTES,
+    DEFAULT_MAX_METADATA_BYTES,
     ENV_HTTP_TIMEOUT_SECONDS,
     ENV_LOCALAPPDATA,
     ENV_MAX_DOWNLOAD_BYTES,
+    ENV_MAX_METADATA_BYTES,
     ENV_WORKSPACE_DIR,
     ENV_XDG_CACHE_HOME,
     ENVIRONMENT_FIELDS,
     ENVIRONMENT_ROLE,
+    MAX_METADATA_BYTES_CEILING,
     PACKAGE_ROLE,
     WORKSPACE_DIR_NAME,
     _interpreter_package_roots,
@@ -77,8 +80,10 @@ def test_defaults_are_valid_without_any_environment_input() -> None:
 
     assert settings.http_timeout_seconds == DEFAULT_HTTP_TIMEOUT_SECONDS == 30.0
     assert settings.max_download_bytes == DEFAULT_MAX_DOWNLOAD_BYTES == 50 * 1024 * 1024
+    assert settings.max_metadata_bytes == DEFAULT_MAX_METADATA_BYTES == 32 * 1024 * 1024
     assert settings.http_timeout_seconds > 0
     assert settings.max_download_bytes > 0
+    assert settings.max_metadata_bytes > 0
     assert settings.workspace_dir.is_absolute()
     assert settings.workspace_dir.parent.name == APP_DIR_NAME
     assert settings.workspace_dir.name == WORKSPACE_DIR_NAME
@@ -109,6 +114,22 @@ def test_http_timeout_is_bounded(timeout: float) -> None:
 def test_download_size_limit_is_bounded(size: int) -> None:
     with pytest.raises(ValidationError):
         Settings(max_download_bytes=size)
+
+
+@pytest.mark.parametrize("size", [0, -1, MAX_METADATA_BYTES_CEILING + 1, 2 * 1024**3])
+def test_metadata_size_limit_is_bounded(size: int) -> None:
+    """A metadata ceiling that could be lifted to a tarball's size would let a registry
+    stream until the process ran out of memory, so the bound is part of the policy."""
+    with pytest.raises(ValidationError):
+        Settings(max_metadata_bytes=size)
+
+
+def test_metadata_and_download_limits_are_separate_settings() -> None:
+    """Moving one limit must not move the other: they bound different objects."""
+    settings = Settings(max_metadata_bytes=1024)
+
+    assert settings.max_metadata_bytes == 1024
+    assert settings.max_download_bytes == DEFAULT_MAX_DOWNLOAD_BYTES
 
 
 def test_workspace_dir_rejects_the_current_directory() -> None:
@@ -145,11 +166,22 @@ def test_environment_variables_are_namespaced_to_packproof() -> None:
         assert variable.startswith("PACKPROOF_"), variable
 
 
+def test_every_environment_binding_names_a_real_setting_field() -> None:
+    """`from_env()` builds `Settings(**overrides)` from these keys, so a binding left
+    behind when a field is renamed would fail as an obscure validation error rather
+    than as a missing configuration."""
+    fields = set(Settings.model_fields)
+    unbound = set(ENVIRONMENT_FIELDS) - fields
+
+    assert not unbound, f"bound but not configured: {unbound}"
+
+
 def test_from_env_applies_only_the_recognised_variables(tmp_path: Path) -> None:
     workspace = tmp_path / "scan-workspace"
     env = {
         ENV_HTTP_TIMEOUT_SECONDS: "45",
         ENV_MAX_DOWNLOAD_BYTES: "1048576",
+        ENV_MAX_METADATA_BYTES: "2097152",
         ENV_WORKSPACE_DIR: str(workspace),
         "PATH": "/usr/bin",  # unrelated
         "PACKPROOF_HTTP_TIMEOUT": "999",  # near-miss name must not bind
@@ -159,6 +191,7 @@ def test_from_env_applies_only_the_recognised_variables(tmp_path: Path) -> None:
 
     assert settings.http_timeout_seconds == 45.0
     assert settings.max_download_bytes == 1048576
+    assert settings.max_metadata_bytes == 2097152
     assert settings.workspace_dir == workspace
 
 
